@@ -1,0 +1,7 @@
+import { Link } from './Link'
+import { Logo } from './Logo'
+import { Icon } from './Icon'
+const nav = [['/home','home','Home'],['/interview','mic','AI Interview'],['/resume','file','Resume'],['/job-description','briefcase','Job match'],['/reports','chart','Reports'],['/history','clock','History'],['/recommendations','spark','Recommendations']]
+export function AppShell({ path, children }) {
+  return <div className="app-layout"><header className="app-top"><div className="app-top-inner"><Logo/><nav className="app-nav">{nav.map(([url,icon,label]) => <Link key={url} to={url} className={path === url ? 'active' : ''}><Icon name={icon} size={16}/>{label}</Link>)}</nav><div className="top-actions"><button className="icon-button" aria-label="Notifications"><Icon name="bell" size={18}/><i /></button><button className="icon-button" aria-label="Settings"><Icon name="settings" size={18}/></button><Link to="/profile" className="avatar">AM</Link><Link to="/profile" className="user-meta"><strong>Alex M.</strong><span>Job seeker</span></Link></div><button className="icon-button menu-button" aria-label="Open navigation"><Icon name="menu" /></button></div></header><main className="app-main"><div className="page-wrap">{children}</div></main><footer className="app-footer"><div><Logo/><p>© 2026 InterviewAI. Precision in preparation.</p></div><nav><a href="/#features">Features</a><a href="/#how">How it works</a><a href="#">Privacy</a><a href="mailto:hello@interviewai.cm">Contact</a></nav></footer></div>
+}
