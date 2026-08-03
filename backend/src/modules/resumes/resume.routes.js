@@ -1,0 +1,11 @@
+import fs from 'node:fs/promises'
+import { Router } from 'express'
+import { db } from '../../config/database.js'
+import { resumeUpload } from '../../middleware/upload.js'
+import { AppError, asyncHandler, sendData } from '../../utils/http.js'
+import { extractDocumentText } from '../../services/document-parser.service.js'
+export const resumeRouter=Router()
+resumeRouter.get('/',asyncHandler(async(req,res)=>{const [rows]=await db.execute('SELECT id,original_name,mime_type,file_size,strength_score,is_primary,status,created_at FROM resumes WHERE user_id=? ORDER BY created_at DESC',[req.session.userId]);sendData(res,rows)}))
+resumeRouter.post('/',resumeUpload.single('resume'),asyncHandler(async(req,res)=>{if(!req.file)throw new AppError(400,'Choose a resume to upload.');let text='';let status='ready';try{text=await extractDocumentText(req.file)}catch{status='failed'}await db.execute('UPDATE resumes SET is_primary=FALSE WHERE user_id=?',[req.session.userId]);const [result]=await db.execute('INSERT INTO resumes (user_id,original_name,stored_name,mime_type,file_size,extracted_text,is_primary,status) VALUES (?,?,?,?,?,?,TRUE,?)',[req.session.userId,req.file.originalname,req.file.filename,req.file.mimetype,req.file.size,text,status]);sendData(res,{id:result.insertId,originalName:req.file.originalname,status},201)}))
+resumeRouter.get('/:id',asyncHandler(async(req,res)=>{const [rows]=await db.execute('SELECT id,original_name,mime_type,file_size,strength_score,status,created_at FROM resumes WHERE id=? AND user_id=?',[req.params.id,req.session.userId]);if(!rows[0])throw new AppError(404,'Resume not found.');const [insights]=await db.execute('SELECT category,title,description,metadata FROM resume_insights WHERE resume_id=? ORDER BY sort_order',[req.params.id]);sendData(res,{...rows[0],insights})}))
+resumeRouter.delete('/:id',asyncHandler(async(req,res)=>{const [rows]=await db.execute('SELECT stored_name FROM resumes WHERE id=? AND user_id=?',[req.params.id,req.session.userId]);if(!rows[0])throw new AppError(404,'Resume not found.');await db.execute('DELETE FROM resumes WHERE id=? AND user_id=?',[req.params.id,req.session.userId]);await fs.unlink(new URL(`../../../storage/uploads/${rows[0].stored_name}`,import.meta.url)).catch(()=>{});res.status(204).end()}))

@@ -1,0 +1,9 @@
+import { Router } from 'express'
+import { z } from 'zod'
+import { db } from '../../config/database.js'
+import { asyncHandler, sendData } from '../../utils/http.js'
+import { validate } from '../../utils/validation.js'
+const schema=z.object({fullName:z.string().trim().min(2).max(120),phone:z.string().max(30).nullable().optional(),university:z.string().max(160).nullable().optional(),degree:z.string().max(160).nullable().optional(),bio:z.string().max(2000).nullable().optional(),preferredJobRole:z.string().max(160).nullable().optional(),skills:z.array(z.string().trim().min(1).max(100)).max(30).optional()})
+export const profileRouter=Router()
+profileRouter.get('/',asyncHandler(async(req,res)=>{const [rows]=await db.execute(`SELECT u.id,u.full_name,u.email,p.phone,p.university,p.degree,p.bio,p.preferred_job_role,p.profile_image_url,p.onboarding_step FROM users u JOIN profiles p ON p.user_id=u.id WHERE u.id=?`,[req.session.userId]);const [skills]=await db.execute('SELECT id,name,proficiency FROM user_skills WHERE user_id=? ORDER BY name',[req.session.userId]);sendData(res,{...rows[0],skills})}))
+profileRouter.put('/',validate(schema),asyncHandler(async(req,res)=>{const {fullName,phone=null,university=null,degree=null,bio=null,preferredJobRole=null,skills=[]}=req.body;const c=await db.getConnection();try{await c.beginTransaction();await c.execute('UPDATE users SET full_name=? WHERE id=?',[fullName,req.session.userId]);await c.execute('UPDATE profiles SET phone=?,university=?,degree=?,bio=?,preferred_job_role=? WHERE user_id=?',[phone,university,degree,bio,preferredJobRole,req.session.userId]);if(req.body.skills){await c.execute('DELETE FROM user_skills WHERE user_id=?',[req.session.userId]);for(const skill of skills)await c.execute('INSERT INTO user_skills (user_id,name) VALUES (?,?)',[req.session.userId,skill])}await c.commit();sendData(res,{message:'Profile updated.'})}catch(e){await c.rollback();throw e}finally{c.release()}}))
