@@ -1,0 +1,20 @@
+{
+  "name": "interviewai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "InterviewAI - Vite frontend + Express API (API deployed to Vercel as a serverless function)",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "mammoth": "^1.10.0",
+    "multer": "^2.0.2",
+    "openai": "^6.49.0",
+    "pdf-parse": "^1.1.1",
+    "ws": "^8.20.0",
+    "zod": "^4.0.17"
+  }
+}
