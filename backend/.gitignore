@@ -4,3 +4,6 @@ storage/uploads/*
 !storage/uploads/.gitkeep
 coverage/
 *.log
+
+.env
+.env copy
