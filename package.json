@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "description": "InterviewAI - Vite frontend + Express API (API deployed to Vercel as a serverless function)",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev & npm --prefix backend run dev",
+    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "install:all": "npm install && npm --prefix frontend install && npm --prefix backend install"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",
     "cors": "^2.8.5",
