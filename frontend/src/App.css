@@ -395,3 +395,15 @@ h1, h2, h3 { font-family: Geist, sans-serif; color: var(--navy); }
   .chat-pane { min-height: 520px; }
   .chat-sidebar { grid-template-columns: 1fr; }
 }
+
+.speak-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin-left: 8px; padding: 0;
+  border: 1px solid #d1d3d8; border-radius: 7px;
+  background: white; color: #62656c; cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+  vertical-align: middle; flex-shrink: 0;
+}
+.speak-btn:hover { background: var(--violet); color: white; border-color: var(--violet); }
+.chat-bubble { display: flex; align-items: flex-start; flex-wrap: wrap; }
+.chat-bubble p { flex: 1; min-width: 0; }

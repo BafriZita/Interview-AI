@@ -11,6 +11,31 @@ function cap(str) {
   return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
+function filterByLevel(questions, level) {
+  if (!level || level === 'Mid-level') return questions
+  if (level === 'Junior') {
+    return questions.filter(q => 
+      !q.includes('architecture') && 
+      !q.includes('scale') && 
+      !q.includes('trade-off') &&
+      !q.includes('strategic')
+    )
+  }
+  if (level === 'Senior / Staff') {
+    return questions.filter(q => 
+      q.includes('architecture') || 
+      q.includes('scale') || 
+      q.includes('trade-off') ||
+      q.includes('strategic') ||
+      q.includes('mentor') ||
+      q.includes('lead') ||
+      q.includes('design') ||
+      q.includes('decision')
+    )
+  }
+  return questions
+}
+
 const bank = {
   hr: [
     'Tell me about yourself and why this role interests you.',
@@ -84,12 +109,12 @@ const bank = {
   ],
 }
 
-export function buildQuestionSet(type = 'mixed', count = 8) {
+export function buildQuestionSet(type = 'mixed', count = 8, level) {
   const groups = type === 'mixed'
     ? Object.entries(bank)
     : [[type, bank[type] || bank.hr]]
   const all = groups.flatMap(([questionType, questions]) =>
-    shuffle(questions).map((questionText) => ({ questionType, questionText: cap(questionText) })),
+    shuffle(filterByLevel(questions, level)).map((questionText) => ({ questionType, questionText: cap(questionText) })),
   )
   const picked = []
   for (let i = 0; i < count; i += 1) {

@@ -195,100 +195,259 @@ function friendlyCoachReply(userMessage, candidateName, extra = {}) {
   const text = message.toLowerCase()
   const score = extra.overallScore != null ? Number(extra.overallScore) : null
   const nextQ = String(extra.nextQuestion || '').trim()
+  const evaluationFeedback = extra.evaluationFeedback || ''
+  const conversationHistory = extra.conversationHistory || []
 
-  let opener
-  let feedback
+  // Analyze the user's message to understand intent
+  const isQuestion = /\?\s*$/.test(message.trim())
+  const isClarificationRequest = /(what (do you mean|kind of example)|i don't understand|can you explain|clarify|rephrase)/i.test(text)
+  const isSkipRequest = /(skip|next question|move on|pass)/i.test(text)
+  const isFeedbackResponse = evaluationFeedback && (/(yes|yeah|yep|sure|ok|okay|ready|next|nope|no|nah)/i.test(text) || isQuestion || isClarificationRequest)
+  const isGreeting = /^(hi|hello|hey|good (morning|afternoon|evening))\b/i.test(text)
+  const isThanks = /^(thank|thanks)\b/i.test(text)
+  const isNervous = /(nervous|anxious|scared|afraid|worry|stress)/i.test(text)
+  const isShort = message.trim().split(/\s+/).length < 15
 
+  // Get the last AI question from history for context
+  let lastAIQuestion = ''
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    if (conversationHistory[i].role === 'assistant' && conversationHistory[i].content.startsWith('Question:')) {
+      lastAIQuestion = conversationHistory[i].content.replace('Question: ', '')
+      break
+    }
+  }
+
+  // Get the last AI feedback from history
+  let lastAIFeedback = ''
+  for (let i = conversationHistory.length - 1; i >= 0; i--) {
+    if (conversationHistory[i].role === 'assistant' && !conversationHistory[i].content.startsWith('Question:')) {
+      lastAIFeedback = conversationHistory[i].content
+      break
+    }
+  }
+
+  const hasSpecifics = /\d+(\.\d+)?\s*(%|percent|users|clients|revenue|cost|people|team|months|years|weeks|days|hours|ms|seconds|requests|transactions|api|database|server|latency|throughput|scale|reduced|increased|improved|cut|saved|delivered|launched|built|designed|implemented|architected|led|managed|owned|drove)\b/i.test(message)
+  const hasSTAR = /situation|task|action|result|context|challenge|outcome|impact|example|instance|specific|concrete|real|actual/i.test(message)
+  const hasOwnership = /\bi (led|built|designed|created|developed|implemented|launched|drove|managed|owned|delivered|improved|reduced|increased|solved|fixed|architected|decided|chose|prioritized)\b/i.test(message)
+  const wordCount = message.trim().split(/\s+/).length
+
+  let response = ''
+
+  // 1. Handle clarification requests about the question itself
+  if (isClarificationRequest && lastAIQuestion) {
+    const opener = pick([
+      `Good question, ${name}. Let me rephrase. `,
+      `Sure thing, ${name}. Here's what I'm asking: `,
+      `Happy to clarify, ${name}. `,
+    ], message)
+    response = `${opener}When I ask "${lastAIQuestion}", I'm looking for a specific example from your experience. Think of a real situation you faced, what you did, and what happened. It doesn't need to be perfect — just honest. Want to give it a try?`
+    return response
+  }
+
+  // 2. Handle skip requests
+  if (isSkipRequest) {
+    const opener = pick([
+      `Absolutely, ${name}. Let's move on. `,
+      `No problem, ${name}. On to the next one. `,
+      `Sure, ${name}. Here's another: `,
+    ], message)
+    const next = nextQ ? `Next question: ${nextQ}` : 'That was the last question — tap "End session" for your report.'
+    return `${opener}${next}`
+  }
+
+  // 3. Handle user responding to feedback (not answering a new question)
+  if (isFeedbackResponse && lastAIFeedback && !isQuestion) {
+    const affirmative = /^(yes|yeah|yep|sure|ok|okay|ready|next)$/i.test(text)
+    if (affirmative) {
+      const next = nextQ ? `Great, let's keep going. ${nextQ}` : 'That was the last question — tap "End session" for your report.'
+      return `${pick([`Good, ${name}. `, `Sounds good, ${name}. `, `Alright, ${name}. `], message)}${next}`
+    }
+    // User asked a follow-up about the feedback
+    const opener = pick([
+      `Great follow-up, ${name}. `,
+      `Good question, ${name}. `,
+      `I'm glad you asked, ${name}. `,
+    ], message)
+    if (/what kind of example|what example|give me an example/i.test(text)) {
+      response = `${opener}For your answer about ${lastAIQuestion?.slice(0, 60)}..., a strong example would be: a specific situation, what YOU did (not "we"), and a measurable result — like "I reduced deployment time by 40% by introducing automated testing." Does that help clarify?`
+    } else if (/how|what should i|what do you mean/i.test(text)) {
+      response = `${opener}Here's what would make it stronger: be specific about the situation, own your actions with "I", and include a concrete result (numbers help). Try retelling it with those pieces.`
+    } else {
+      response = `${opener}When I gave that feedback, I meant: your answer had good intent but would land better with a real story and a measurable outcome. What part would you like to dig into?`
+    }
+    return response
+  }
+
+  // 4. Handle greetings/thanks/nerves (not an interview answer)
+  if (isGreeting || isThanks || isNervous) {
+    const opener = pick([
+      `Hey ${name}! `,
+      `Hi ${name}. `,
+      `${name}, `,
+    ], message)
+    if (isGreeting) {
+      response = `${opener}Nice to see you. Ready when you are — just answer naturally and we'll work through it together.`
+    } else if (isThanks) {
+      response = `${opener}You're doing the work — that's what matters. Keep going.`
+    } else {
+      response = `${opener}Nerves are normal — even great candidates get them. Slow down, breathe, and answer one idea at a time. You've got this.`
+    }
+    return response
+  }
+
+  // 5. Handle actual interview answers (with score context if available)
   if (score != null) {
-    opener = pick([
-      `Okay ${name}, honest coach check on that answer. `,
-      `Right, ${name} — real talk for a second. `,
+    const opener = pick([
+      `Okay ${name}, honest coach check. `,
+      `Right, ${name} — real talk. `,
       `Good effort, ${name}. Now the honest bit. `,
-      `I am going to be straight with you, ${name}, the way a real mentor would. `,
+      `I'm going to be straight with you, ${name}. `,
     ], message)
 
+    const specifics = []
+    if (hasSpecifics) specifics.push("you included numbers — that's strong")
+    if (hasSTAR) specifics.push("you gave a concrete example")
+    if (hasOwnership) specifics.push("you owned it with 'I' statements")
+    if (!hasSpecifics && !hasSTAR && !hasOwnership) specifics.push("it stayed high-level without a concrete story or numbers")
+
+    const whatWorked = specifics.filter(s => s.startsWith('you')).join(', ') || 'you answered'
+    const whatMissed = specifics.filter(s => !s.startsWith('you')).join(', ') || 'a concrete example with measurable results'
+
+    let feedback = ''
     if (score >= 75) {
       feedback = pick([
-        `that landed well — you gave a concrete result and owned the outcome. Take it to the next level by going one layer deeper on the "how" and naming the scale of the impact. `,
-        `nice work — the structure held and the result came through clearly. Push further by dropping the exact number (users, %, seconds) and the lesson you walked away with. `,
+        `that landed well — ${whatWorked}. To level up, go one layer deeper on the "how" and name the exact scale of impact. `,
+        `nice work — ${whatWorked}. Push further by adding the specific metric (users, %, seconds saved) and the lesson you took away. `,
       ], `${score}`)
     } else if (score >= 50) {
       feedback = pick([
-        `solid start, but it ran a bit high-level. Interviewers want specifics: pick one real situation, say what YOU did rather than "we", and close with a measured result. `,
-        `decent, but it read a little generic. Anchor it with one concrete example and one hard number — that is what separates a good answer from a memorable one. `,
+        `solid start — ${whatWorked}, but ${whatMissed}. Interviewers need one real situation, what YOU specifically did, and a measured outcome. `,
+        `decent — ${whatWorked}, though it read a bit generic. Anchor it with one concrete story and one hard number — that's what makes it memorable. `,
       ], `${message.length}`)
     } else {
       feedback = pick([
-        `honestly, this one missed the mark a little — too brief, and the outcome did not come through. Rebuild it with the STAR shape: Situation, your Task, the Action you took, the Result you measured. `,
-        `I have to be honest — that answer did not land. It lacked a real example and a measurable result. Rebuild it around one specific story with a clear before and after. `,
+        `honestly, this one missed the mark — ${whatMissed}. Rebuild it with STAR: Situation, your Task, the Action YOU took, the Result you measured. `,
+        `I have to be honest — that answer didn't land. It lacked a real example and a measurable result. Rebuild it around one specific story with a clear before and after. `,
       ], `${name.length}`)
     }
-  } else {
-    opener = pick([
-      `Great question, ${name}! Let me think with you for a moment. `,
-      `I love that you asked, ${name}. Here is what a senior coach would say: `,
-      `That is a really good one, ${name}. My honest take: `,
-      `Happy to help with that, ${name}. `,
-    ], `${message.length}`)
 
+    // Add a natural follow-up question based on their answer
+    let followUp = ''
+    if (score < 75) {
+      if (!hasSTAR) followUp = ` Want to try retelling it with a specific example?`
+      else if (!hasSpecifics) followUp = ` What was the measurable result?`
+      else if (!hasOwnership) followUp = ` What was YOUR specific role in that?`
+    } else {
+      followUp = ` What did you learn from that experience?`
+    }
+
+    const next = nextQ ? ` When you're ready: ${nextQ}` : ` That was the last question — tap "End session" for your report.`
+    return `${opener}${feedback}${followUp}${next}`
+  }
+
+  // 6. User asking a question (not an answer)
+  if (isQuestion) {
+    const opener = pick([
+      `Great question, ${name}. `,
+      `I love that you asked, ${name}. `,
+      `That's a good one, ${name}. `,
+      `Happy to help, ${name}. `,
+    ], message)
     let topic = pick([
       'structure every answer around a concrete result you delivered',
       'add one hard number to your next answer — even an estimate counts',
       'name the situation briefly, then spend most of your time on YOUR actions',
       'finish answers with what you learned, so you sound senior and reflective',
     ], message)
-
-    if (/hi|hello|hey|good (morning|afternoon|evening)/i.test(text)) {
-      topic = 'when you answer, open with your strongest point first — you have great instincts, trust them and lead with the win'
-    } else if (/thank|thanks/i.test(text)) {
-      topic = 'you are doing the hard work most people skip — keep answering out loud and it will feel natural in no time'
-    } else if (/nervous|anxious|scared|afraid|worry/i.test(text)) {
-      topic = 'nerves are normal — even great candidates get them. Slow down, breathe, and answer one idea at a time'
-    } else if (/question|what should i|how do i|give me|example|tell me/i.test(text)) {
-      topic = 'the strongest answers follow one shape: Situation, your Task, the Action you took, and the Result you measured'
-    }
-
-    feedback = `for now, ${topic}. `
+    if (/how do i|what should i/i.test(text)) topic = 'the strongest answers follow one shape: Situation, your Task, the Action you took, and the Result you measured'
+    else if (/example/i.test(text)) topic = 'a strong example is specific: situation, your action, measurable result'
+    response = `${opener}${topic}. Want to try it on the current question?`
+    return response
   }
 
-  const next = nextQ ? `Now take the next one: ${nextQ}` : 'That was your last question — tap "End session" and I will have your honest report ready for you.'
-  return `${opener}${feedback}${next}`
+  // 7. Default: treat as interview answer without score (shouldn't happen often)
+  const opener = pick([
+    `Thanks for sharing that, ${name}. `,
+    `Got it, ${name}. `,
+    `That's a start, ${name}. `,
+  ], message)
+  const next = nextQ ? `Next up: ${nextQ}` : 'That was the last question — tap "End session" for your report.'
+  return `${opener}Could you give me a bit more detail — a specific situation, what you did, and the result?${next}`
 }
 
 function coachPersona(targetRole, candidateName, extra = {}) {
   const evaluationNote = extra.evaluationFeedback
-    ? `\n\nTheir LATEST answer was just scored. The honest evaluation of it reads: "${extra.evaluationFeedback}"`
+    ? `\n\nThe candidate's LATEST answer was just evaluated. The evaluation summary: "${extra.evaluationFeedback}" (Score: ${extra.overallScore ?? 'N/A'}/100). Use this as context but respond naturally to what they say next.`
     : ''
   const nextNote = extra.nextQuestion
-    ? `\n\nAfter your feedback, ask them the next interview question naturally — keep the spirit of this question: "${extra.nextQuestion}"`
-    : `\n\nThis was the last question. After your feedback, wrap up warmly and tell them to tap "End session" for their honest report.`
-  return `You are InterviewAI, a warm, deeply human interview coach chatting LIVE with ${candidateName || 'your candidate'} inside a mock interview for the ${targetRole || 'target'} role. You talk like a favourite mentor: upbeat, personal, a little playful, but always honest — never robotic, never a list of bullets.\n\nRules for every reply:\n1. React to their message with genuine energy and personality first — real enthusiasm, warmth, a bit of humour where it fits.\n2. Then give HONEST, specific feedback on their answer: name exactly what was strong and exactly what was weak, missing or wrong. If the answer fell short, CORRECT them kindly but clearly — show the concrete fix (STAR, a hard metric, more specifics, ownership with "I" not "we").\n3. Keep it flowing and conversational like ChatGPT — short punchy sentences, some feeling, no bullet spam.\n4. If they are chatting or asking you something instead of answering, answer their question directly first, then steer back to the interview.${evaluationNote}${nextNote}\n\nRemember their name, resume and everything they said earlier this session, and build on it naturally. In the conversation history, messages that start with "Question:" are the questions you asked; user messages are the candidate's answers.`
+    ? `\n\nThere is a next question available: "${extra.nextQuestion}". Don't present it immediately — wait for the right moment in conversation.`
+    : `\n\nThis was the last question. After wrapping up, remind them to tap "End session" for their report.`
+  return `You are InterviewAI, a warm, deeply human interview coach chatting LIVE with ${candidateName || 'the candidate'} inside a mock interview for the ${targetRole || 'target'} role. You talk like a favourite mentor: upbeat, personal, a little playful, but always honest — never robotic, never a list of bullets.
+
+CONVERSATION CONTEXT:
+You have access to the FULL conversation history including:
+- Your previous questions (prefixed with "Question:")
+- The candidate's answers
+- Your previous feedback/responses
+- The candidate's follow-up questions and your replies
+
+RULES FOR EVERY REPLY:
+1. READ the full history first. Understand what's being discussed right now.
+2. Determine the user's intent:
+   - Are they ANSWERING the current interview question?
+   - Are they ASKING a clarifying question about the question?
+   - Are they RESPONDING to your previous feedback?
+   - Are they ASKING for an example/explanation?
+   - Are they asking to SKIP the question?
+   - Are they expressing NERVES/THANKS/GREETING?
+   - Are they going OFF-TOPIC?
+3. RESPOND appropriately:
+   - If ANSWERING: Acknowledge their specific answer, give honest feedback referencing THEIR words, ask ONE relevant follow-up or present next question naturally.
+   - If ASKING FOR CLARIFICATION: Rephrase the question simply, encourage them to try.
+   - If RESPONDING TO FEEDBACK: Answer their follow-up, then guide back.
+   - If ASKING TO SKIP: Acknowledge, present next question.
+   - If NERVES/THANKS/GREETING: Warm response, keep interview on track.
+   - If OFF-TOPIC: Gently redirect back to interview.
+4. Be conversational: short sentences, natural flow, reference their actual words.
+5. NEVER give generic advice disconnected from their answer.
+6. NEVER force STAR method unless their answer genuinely needs structure.
+7. Keep interview moving but at a natural pace.${evaluationNote}${nextNote}
+
+Remember their name, resume, and everything said this session. Build on it naturally.`
 }
 
 /**
  * AI-generated interview questions, personalised to the candidate's resume and target role.
- * @param {{ targetRole:string, resumeText?:string, candidateName?:string, type:string, count:number }} context
+ * @param {{ targetRole:string, resumeText?:string, candidateName?:string, type:string, count:number, level?:string }} context
  */
 export async function generateQuestions(context) {
-  if (!client) return buildQuestionSet(context.type, context.count)
+  if (!client) return buildQuestionSet(context.type, context.count, context.level)
   const resume = (context.resumeText || '').trim().slice(0, 4000)
   const name = firstName(context.candidateName)
+  const levelGuide = context.level === 'Junior'
+    ? 'Focus on foundational concepts, learning ability, and potential. Questions should be approachable but reveal depth of understanding.'
+    : context.level === 'Senior / Staff'
+    ? 'Focus on architectural decisions, trade-offs, mentoring, and strategic thinking. Questions should probe for systems-level thinking and leadership.'
+    : 'Focus on practical experience, problem-solving, and delivery. Questions should balance depth with real-world pragmatism.'
   try {
     const data = await chatJson([
-      { role: 'system', content: `You are a senior interview coach. Generate realistic, challenging interview questions for a ${context.targetRole || 'software'} interview based on the candidate's resume and background. Personalise them — every question should feel like it was written for this specific person, ${name || 'the candidate'}. Avoid repeating questions from the candidate's previous sessions. Return ONLY JSON.` },
-      { role: 'user', content: JSON.stringify({ interviewType: context.type, questionCount: context.count, resume, candidateName: name }) },
+      { role: 'system', content: `You are a senior interview coach. Generate realistic, challenging interview questions for a ${context.targetRole || 'software'} interview based on the candidate's resume and background. Personalise them — every question should feel like it was written for this specific person, ${name || 'the candidate'}. Avoid repeating questions from the candidate's previous sessions. Return ONLY JSON.
+
+Difficulty level: ${context.level || 'Mid-level'}
+${levelGuide}` },
+      { role: 'user', content: JSON.stringify({ interviewType: context.type, questionCount: context.count, resume, candidateName: name, level: context.level }) },
     ], {
-      fallbackResult: { questions: buildQuestionSet(context.type, context.count) },
+      fallbackResult: { questions: buildQuestionSet(context.type, context.count, context.level) },
       maxTokens: 2000,
     })
     const list = Array.isArray(data?.questions) ? data.questions : []
-    if (!list.length) return buildQuestionSet(context.type, context.count)
+    if (!list.length) return buildQuestionSet(context.type, context.count, context.level)
     return list.slice(0, context.count).map((q, i) => ({
       questionType: typeof q.question_type === 'string' ? q.question_type : typeof q.questionType === 'string' ? q.questionType : context.type === 'mixed' ? (i % 2 ? 'behavioral' : 'technical') : context.type,
       questionText: String(q.question_text || q.question || q.questionText || '').trim(),
     })).filter((q) => q.questionText)
   } catch {
-    return buildQuestionSet(context.type, context.count)
+    return buildQuestionSet(context.type, context.count, context.level)
   }
 }
 
@@ -538,26 +697,37 @@ export async function generateRecommendations(context) {
 
 /**
  * Coach chat: answer the candidate's questions with context from the session.
- * @param {{ targetRole:string, candidateName?:string, resumeText?:string, messages:Array<{role:'user'|'assistant', content:string}>, evaluation?:{overallScore?:number, feedback?:string}|null, nextQuestion?:string|null }} context
+ * @param {{ targetRole:string, candidateName?:string, resumeText?:string, messages:Array<{role:'user'|'assistant', content:string}>, evaluation?:{overallScore?:number, feedback?:string}|null, nextQuestion?:string|null, conversationHistory?:Array<{role:'user'|'assistant', content:string}> }} context
  */
 export async function coachReply(context) {
   const last = context.messages.at(-1)?.content
-  const extra = { overallScore: context.evaluation?.overallScore, nextQuestion: context.nextQuestion }
-  if (!client || aiUnavailable) return friendlyCoachReply(last, context.candidateName, extra)
+  const extra = { 
+    overallScore: context.evaluation?.overallScore, 
+    nextQuestion: context.nextQuestion,
+    evaluationFeedback: context.evaluation?.feedback,
+    conversationHistory: context.conversationHistory || context.messages
+  }
+  if (!client || aiUnavailable) {
+    console.log('[AI] OpenAI unavailable, using fallback (coachReply)')
+    return friendlyCoachReply(last, context.candidateName, extra)
+  }
   const resume = (context.resumeText || '').trim().slice(0, 2500)
-  const sys = resume ? `${coachPersona(context.targetRole, context.candidateName, { evaluationFeedback: context.evaluation?.feedback, nextQuestion: context.nextQuestion })}\n\nRelevant resume background you can weave in naturally:\n${resume}` : coachPersona(context.targetRole, context.candidateName, { evaluationFeedback: context.evaluation?.feedback, nextQuestion: context.nextQuestion })
+  const sys = resume ? `${coachPersona(context.targetRole, context.candidateName, extra)}\n\nRelevant resume background you can weave in naturally:\n${resume}` : coachPersona(context.targetRole, context.candidateName, extra)
   try {
+    console.log('[AI] Calling OpenAI API (coachReply)...')
     const completion = await client.chat.completions.create({
       model: env.openaiModel,
       temperature: 0.9,
       max_tokens: 700,
       messages: [
         { role: 'system', content: sys },
-        ...context.messages.slice(-10),
+        ...context.messages.slice(-12),
       ],
     })
+    console.log('[AI] OpenAI response received')
     return completion.choices?.[0]?.message?.content?.trim() || 'No response.'
   } catch (error) {
+    console.error('[AI] OpenAI error (coachReply):', error?.message || error)
     markUnavailable(error)
     return friendlyCoachReply(last, context.candidateName, extra)
   }
@@ -565,19 +735,26 @@ export async function coachReply(context) {
 
 /**
  * Streaming coach chat: emit reply tokens as they arrive (ChatGPT-style).
- * @param {{ targetRole:string, candidateName?:string, resumeText?:string, messages:Array<{role:'user'|'assistant', content:string}>, evaluation?:{overallScore?:number, feedback?:string}|null, nextQuestion?:string|null }} context
+ * @param {{ targetRole:string, candidateName?:string, resumeText?:string, messages:Array<{role:'user'|'assistant', content:string}>, evaluation?:{overallScore?:number, feedback?:string}|null, nextQuestion?:string|null, conversationHistory?:Array<{role:'user'|'assistant', content:string}> }} context
  * @param {(token:string)=>void} onToken
  */
 export async function streamCoachReply(context, onToken) {
   const last = context.messages.at(-1)?.content
-  const extra = { overallScore: context.evaluation?.overallScore, nextQuestion: context.nextQuestion }
+  const extra = { 
+    overallScore: context.evaluation?.overallScore, 
+    nextQuestion: context.nextQuestion,
+    evaluationFeedback: context.evaluation?.feedback,
+    conversationHistory: context.conversationHistory || context.messages
+  }
   if (!client || aiUnavailable) {
+    console.log('[AI] OpenAI unavailable, using fallback')
     for (const word of friendlyCoachReply(last, context.candidateName, extra).split(/(\s+)/)) onToken(word)
     return
   }
   const resume = (context.resumeText || '').trim().slice(0, 2500)
-  const sys = resume ? `${coachPersona(context.targetRole, context.candidateName, { evaluationFeedback: context.evaluation?.feedback, nextQuestion: context.nextQuestion })}\n\nRelevant resume background you can weave in naturally:\n${resume}` : coachPersona(context.targetRole, context.candidateName, { evaluationFeedback: context.evaluation?.feedback, nextQuestion: context.nextQuestion })
+  const sys = resume ? `${coachPersona(context.targetRole, context.candidateName, extra)}\n\nRelevant resume background you can weave in naturally:\n${resume}` : coachPersona(context.targetRole, context.candidateName, extra)
   try {
+    console.log('[AI] Calling OpenAI API...')
     const stream = await client.chat.completions.create({
       model: env.openaiModel,
       temperature: 0.9,
@@ -585,16 +762,40 @@ export async function streamCoachReply(context, onToken) {
       stream: true,
       messages: [
         { role: 'system', content: sys },
-        ...context.messages.slice(-10),
+        ...context.messages.slice(-12),
       ],
     })
+    console.log('[AI] Stream started')
     for await (const chunk of stream) {
       const token = chunk.choices?.[0]?.delta?.content
       if (token) onToken(token)
     }
+    console.log('[AI] Stream completed')
   } catch (error) {
+    console.error('[AI] OpenAI error:', error?.message || error)
     markUnavailable(error)
     for (const word of friendlyCoachReply(last, context.candidateName, extra).split(/(\s+)/)) onToken(word)
+  }
+}
+
+/**
+ * Text-to-speech: convert text to audio using OpenAI TTS.
+ * Returns a Buffer of mp3 audio, or null if unavailable.
+ * @param {{ text:string, voice?:string }} options
+ */
+export async function generateSpeech({ text, voice = 'alloy' }) {
+  if (!client || aiUnavailable) return null
+  try {
+    const response = await client.audio.speech.create({
+      model: 'tts-1',
+      voice,
+      input: (text || '').slice(0, 4096),
+      response_format: 'mp3',
+    })
+    return Buffer.from(await response.arrayBuffer())
+  } catch (error) {
+    markUnavailable(error)
+    return null
   }
 }
 

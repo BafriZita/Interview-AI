@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { supabaseAdmin } from '../../utils/supabase-admin.js'
 import { AppError, asyncHandler, sendData } from '../../utils/http.js'
 import { validate } from '../../utils/validation.js'
-import { generateQuestions, evaluateAnswer, transcribeAudio, generateReport, coachReply, streamCoachReply, generateRecommendations } from '../../services/openai.service.js'
+import { generateQuestions, evaluateAnswer, transcribeAudio, generateReport, coachReply, streamCoachReply, generateRecommendations, generateSpeech } from '../../services/openai.service.js'
 import { createNotification } from '../notifications/notifications.helper.js'
 import { audioUpload } from '../../middleware/upload.js'
 import { isColumnMissing } from '../../utils/supabase-errors.js'
@@ -17,12 +17,14 @@ const createSchema = z.object({
   resumeId: z.number().int().positive().nullable().optional(),
   jobDescriptionId: z.number().int().positive().nullable().optional(),
   questionCount: z.number().int().min(3).max(20).default(8),
+  level: z.enum(['Junior', 'Mid-level', 'Senior / Staff']).optional(),
 })
 const answerSchema = z.object({ answerText: z.string().trim().min(1).max(20000), durationSeconds: z.number().int().min(0).max(7200).optional() })
 const chatSchema = z.object({
   message: z.string().trim().min(1).max(4000),
   evaluation: z.object({ overallScore: z.number().nullish(), feedback: z.string().nullish() }).nullish(),
   nextQuestion: z.string().nullish(),
+  chatLog: z.array(z.object({ role: z.enum(['user', 'ai']), content: z.string() })).optional(),
 })
 
 export const interviewRouter = Router()
@@ -75,7 +77,7 @@ interviewRouter.post('/', validate(createSchema), asyncHandler(async (req, res) 
     loadResumeText(req.session.userId, d.resumeId),
     loadCandidateName(req.session.userId),
   ])
-  const questions = await generateQuestions({ targetRole: d.targetRole, resumeText, candidateName, type: d.type, count: d.questionCount })
+  const questions = await generateQuestions({ targetRole: d.targetRole, resumeText, candidateName, type: d.type, count: d.questionCount, level: d.level })
 
   const { data: result, error } = await supabaseAdmin.from('interview_sessions').insert({
     user_id: req.session.userId,
@@ -211,18 +213,41 @@ interviewRouter.post('/:id/chat', validate(chatSchema), asyncHandler(async (req,
     loadResumeText(req.session.userId, session.resume_id),
     loadCandidateName(req.session.userId),
   ])
-  const { data: history, error } = await supabaseAdmin.from('interview_questions')
-    .select('question_text, interview_answers(answer_text)')
-    .eq('interview_session_id', req.params.id)
-    .order('sort_order')
-  if (error) throw error
-  const messages = []
-  for (const q of history || []) {
-    messages.push({ role: 'assistant', content: `Question: ${q.question_text}` })
-    if (q.interview_answers?.[0]?.answer_text) messages.push({ role: 'user', content: q.interview_answers[0].answer_text })
+  
+  // Use frontend's chatLog if provided, otherwise reconstruct from DB
+  let messages = req.body.chatLog && req.body.chatLog.length > 0
+    ? req.body.chatLog.map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }))
+    : []
+  
+  if (messages.length === 0) {
+    const { data: history, error } = await supabaseAdmin.from('interview_questions')
+      .select('question_text, interview_answers(answer_text)')
+      .eq('interview_session_id', req.params.id)
+      .order('sort_order')
+    if (error) throw error
+    for (const q of history || []) {
+      messages.push({ role: 'assistant', content: `Question: ${q.question_text}` })
+      if (q.interview_answers?.[0]?.answer_text) messages.push({ role: 'user', content: q.interview_answers[0].answer_text })
+    }
   }
+  
   messages.push({ role: 'user', content: req.body.message })
-  const reply = await coachReply({ targetRole: session.target_role, candidateName, resumeText, messages, evaluation: req.body.evaluation, nextQuestion: req.body.nextQuestion })
+  
+  // Sanitize: limit history to last 20 messages, strip any injection attempts
+  messages = messages.slice(-20).map(m => ({
+    role: m.role,
+    content: String(m.content).slice(0, 4000)
+  }))
+  
+  const reply = await coachReply({ 
+    targetRole: session.target_role, 
+    candidateName, 
+    resumeText, 
+    messages, 
+    evaluation: req.body.evaluation, 
+    nextQuestion: req.body.nextQuestion,
+    conversationHistory: req.body.chatLog || messages
+  })
   sendData(res, { reply })
 }))
 
@@ -234,17 +259,31 @@ interviewRouter.post('/:id/chat/stream', validate(chatSchema), asyncHandler(asyn
     loadResumeText(req.session.userId, session.resume_id),
     loadCandidateName(req.session.userId),
   ])
-  const { data: history, error } = await supabaseAdmin.from('interview_questions')
-    .select('question_text, interview_answers(answer_text)')
-    .eq('interview_session_id', req.params.id)
-    .order('sort_order')
-  if (error) throw error
-  const messages = []
-  for (const q of history || []) {
-    messages.push({ role: 'assistant', content: `Question: ${q.question_text}` })
-    if (q.interview_answers?.[0]?.answer_text) messages.push({ role: 'user', content: q.interview_answers[0].answer_text })
+  
+  // Use frontend's chatLog if provided, otherwise reconstruct from DB
+  let messages = req.body.chatLog && req.body.chatLog.length > 0
+    ? req.body.chatLog.map(m => ({ role: m.role === 'ai' ? 'assistant' : 'user', content: m.content }))
+    : []
+  
+  if (messages.length === 0) {
+    const { data: history, error } = await supabaseAdmin.from('interview_questions')
+      .select('question_text, interview_answers(answer_text)')
+      .eq('interview_session_id', req.params.id)
+      .order('sort_order')
+    if (error) throw error
+    for (const q of history || []) {
+      messages.push({ role: 'assistant', content: `Question: ${q.question_text}` })
+      if (q.interview_answers?.[0]?.answer_text) messages.push({ role: 'user', content: q.interview_answers[0].answer_text })
+    }
   }
+  
   messages.push({ role: 'user', content: req.body.message })
+  
+  // Sanitize: limit history to last 20 messages
+  messages = messages.slice(-20).map(m => ({
+    role: m.role,
+    content: String(m.content).slice(0, 4000)
+  }))
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -262,12 +301,46 @@ interviewRouter.post('/:id/chat/stream', validate(chatSchema), asyncHandler(asyn
 
   send('start', {})
   try {
-    await streamCoachReply({ targetRole: session.target_role, candidateName, resumeText, messages, evaluation: req.body.evaluation, nextQuestion: req.body.nextQuestion }, (token) => send('token', { token }))
+    console.log('[Route] Calling streamCoachReply...')
+    await streamCoachReply({ 
+      targetRole: session.target_role, 
+      candidateName, 
+      resumeText, 
+      messages, 
+      evaluation: req.body.evaluation, 
+      nextQuestion: req.body.nextQuestion,
+      conversationHistory: req.body.chatLog || messages
+    }, (token) => {
+      console.log('[Route] Token received:', token?.slice(0, 50))
+      send('token', { token })
+    })
+    console.log('[Route] streamCoachReply completed')
   } catch (err) {
-    send('error', { message: 'The AI coach could not respond right now. Please try again.' })
+    console.error('[Route] streamCoachReply error:', err)
+    if (!res.writableEnded) {
+      send('error', { message: 'The AI coach could not respond right now. Please try again.' })
+    }
   }
   send('done', {})
   if (!closed) { try { res.end() } catch { /* client already gone */ } }
+}))
+
+const ttsSchema = z.object({
+  text: z.string().trim().min(1).max(4096),
+  voice: z.enum(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).optional().default('alloy'),
+})
+
+// Text-to-speech: returns mp3 audio for the given text.
+interviewRouter.post('/:id/tts', validate(ttsSchema), asyncHandler(async (req, res) => {
+  const session = await loadOwnedSession(req.params.id, req.session.userId)
+  const buffer = await generateSpeech({ text: req.body.text, voice: req.body.voice })
+  if (!buffer) throw new AppError(503, 'Text-to-speech is unavailable right now. Add OPENAI_API_KEY credits to enable it.', 'AI_UNAVAILABLE')
+  res.writeHead(200, {
+    'Content-Type': 'audio/mpeg',
+    'Cache-Control': 'no-cache',
+    'Content-Length': buffer.length,
+  })
+  res.end(buffer)
 }))
 
 interviewRouter.post('/:id/complete', asyncHandler(async (req, res) => {

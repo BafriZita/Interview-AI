@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Icon } from '../../components/Icon'
 import { Button } from '../../components/Button'
 import { Tag } from '../../components/UI'
 import { navigate } from '../../utils/navigation'
+import { useSpeech } from '../../utils/useSpeech'
+import { useSpeechRecognition } from '../../utils/useSpeechRecognition'
 
 const focusAreas = ['Technical', 'Behavioural', 'Managerial']
 const levels = ['Junior', 'Mid-level', 'Senior / Staff']
@@ -22,8 +24,8 @@ function ChoiceCard({ icon, title, options, selected, onSelect }) {
   return <article className="panel setup-choice-card"><div className="setup-choice-heading"><span><Icon name={icon} size={18} /></span><h2>{title}</h2></div><div className="choice-list">{options.map((option) => <button key={option} className={selected === option ? 'selected' : ''} onClick={() => onSelect(option)}>{option}{selected === option && <Icon name="check" size={16} />}</button>)}</div></article>
 }
 
-function ChatMessage({ type, children }) {
-  return <div className={`chat-message ${type}`}><span className="chat-avatar">{type === 'ai' ? <Icon name="spark" size={17} /> : 'ME'}</span><div className="chat-bubble">{children}</div></div>
+function ChatMessage({ type, children, onSpeak, speaking, canSpeak }) {
+  return <div className={`chat-message ${type}`}><span className="chat-avatar">{type === 'ai' ? <Icon name="spark" size={17} /> : 'ME'}</span><div className="chat-bubble">{children}{type === 'ai' && canSpeak && <button type="button" className="speak-btn" onClick={onSpeak} title={speaking ? 'Stop reading' : 'Read aloud'} aria-label={speaking ? 'Stop reading' : 'Read aloud'}><Icon name={speaking ? 'close' : 'mic'} size={14} /></button>}</div></div>
 }
 
 function AnalysisBar({ label, value, tone }) {
@@ -62,7 +64,11 @@ async function streamChat(url, payload, handlers) {
       if (event && data != null) {
         let payloadData = {}
         try { payloadData = JSON.parse(data) } catch { /* ignore */ }
-        handlers[event]?.(payloadData)
+        if (event === 'error') {
+          handlers.error?.(new Error(payloadData.message || 'Stream error'))
+        } else {
+          handlers[event]?.(payloadData)
+        }
       }
     }
   }
@@ -82,7 +88,6 @@ export function Interview({ sessionId }) {
   const [questions, setQuestions] = useState([])
   const [questionIndex, setQuestionIndex] = useState(0)
   const [answer, setAnswer] = useState('')
-  const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [streaming, setStreaming] = useState(false)
@@ -90,18 +95,33 @@ export function Interview({ sessionId }) {
   const [chatLog, setChatLog] = useState([])
   const [error, setError] = useState('')
   const [ending, setEnding] = useState(false)
-  const mediaRef = useRef(null)
-  const streamRef = useRef(null)
-  const chunksRef = useRef([])
+  const [voice, setVoice] = useState('nova')
+  const [language, setLanguage] = useState('en')
   const chatScrollRef = useRef(null)
   const inputRef = useRef(null)
+  const { speak, stop: stopSpeak, speaking } = useSpeech()
+  const onSpeechResult = useCallback((text) => { setAnswer(text) }, [])
+  const onSpeechEnd = useCallback((finalText) => { setTranscribing(false); if (finalText) setTimeout(() => inputRef.current?.focus(), 50) }, [])
+  const { start: startListening, stop: stopListening, listening } = useSpeechRecognition({ onResult: onSpeechResult, onEnd: onSpeechEnd })
+
+  // Load voice and language from user settings
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('interviewai.user')
+      if (stored) {
+        const user = JSON.parse(stored)
+        if (user.settings?.preferences?.voice) setVoice(user.settings.preferences.voice)
+        if (user.settings?.preferences?.language) setLanguage(user.settings.preferences.language)
+      }
+    } catch { /* ignore */ }
+  }, [])
 
   const question = questions[questionIndex]
   const isDone = questionIndex >= questions.length
 
   useEffect(() => {
     if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
-  }, [chatLog, submitting, recording, transcribing])
+  }, [chatLog, submitting, listening, transcribing])
 
   const startInterview = async () => {
     setError('')
@@ -112,7 +132,7 @@ export function Interview({ sessionId }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetRole, type: 'mixed', questionCount: 6 }),
+        body: JSON.stringify({ targetRole, type: 'mixed', questionCount: 6, level }),
       })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body?.error?.message || 'Could not start the interview. Please try again.')
@@ -172,52 +192,16 @@ export function Interview({ sessionId }) {
     return () => { cancelled = true }
   }, [sessionId])
 
-  const startRecording = async () => {
+  const startRecording = () => {
     setError('')
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
-      chunksRef.current = []
-      const recorder = new MediaRecorder(stream)
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
-      mediaRef.current = recorder
-      recorder.start()
-      setRecording(true)
-    } catch {
-      setError('Microphone access was denied. Enable it in your browser to use voice input, or type your answer instead.')
-    }
+    setAnswer('')
+    setTranscribing(true)
+    startListening()
   }
 
   const stopRecording = () => {
-    const recorder = mediaRef.current
-    if (recorder && recorder.state !== 'inactive') recorder.stop()
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
-    setRecording(false)
-    transcribeChunks()
-  }
-
-  const transcribeChunks = async () => {
-    if (!chunksRef.current.length || !session || !question) return
-    setTranscribing(true)
-    const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-    try {
-      const form = new FormData()
-      form.append('audio', blob, 'recording.webm')
-      const res = await fetch(`/api/v1/interviews/${session.id}/questions/${question.id}/transcribe`, { method: 'POST', credentials: 'include', body: form })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body?.error?.message || 'Could not transcribe the recording.')
-      if (body.data?.transcript) {
-        setAnswer((prev) => (prev ? `${prev} ${body.data.transcript}` : body.data.transcript).trim())
-        setTimeout(() => inputRef.current?.focus(), 50)
-      }
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setTranscribing(false)
-    }
+    setTranscribing(false)
+    stopListening()
   }
 
   const submitAnswer = async () => {
@@ -226,32 +210,40 @@ export function Interview({ sessionId }) {
     setSubmitting(true)
     setError('')
     setAnswer('')
-    setChatLog((prev) => [...prev, { role: 'user', content: text }])
+    
+    // Add user message to chat log first
+    const newChatLog = [...chatLog, { role: 'user', content: text }]
+    setChatLog(newChatLog)
 
     const isCoachQuestion = /\?\s*$/.test(text)
-    const aiIndex = chatLog.length + 1
     let evaluation = null
     let next = null
-    let streamed = ''
+
     const openAIReply = () => {
       setStreaming(true)
       setChatLog((prev) => [...prev, { role: 'ai', content: '' }])
     }
-    const streamReply = () => streamChat(`/api/v1/interviews/${session.id}/chat/stream`, {
+
+    const streamReply = (evalData, nextQ, messagesToSend) => streamChat(`/api/v1/interviews/${session.id}/chat/stream`, {
       message: text,
-      evaluation: evaluation ? { overallScore: evaluation.overallScore, feedback: evaluation.feedback } : null,
-      nextQuestion: next?.question_text || null,
+      evaluation: evalData ? { overallScore: evalData.overallScore, feedback: evalData.feedback } : null,
+      nextQuestion: nextQ?.question_text || null,
+      chatLog: messagesToSend,
     }, {
       token: ({ token }) => {
-        streamed += token
-        const idx = aiIndex
         setChatLog((prev) => {
           const next = prev.slice()
-          if (next[idx]) next[idx] = { ...next[idx], content: next[idx].content + token }
+          const idx = next.length - 1
+          if (next[idx] && next[idx].role === 'ai') {
+            next[idx] = { ...next[idx], content: next[idx].content + token }
+          }
           return next
         })
       },
-      error: () => {},
+      error: (err) => {
+        console.error('Stream error:', err)
+        setError(err?.message || 'Stream failed')
+      },
     })
 
     try {
@@ -270,29 +262,28 @@ export function Interview({ sessionId }) {
         setQuestionIndex((i) => i + 1)
       }
 
+      // Stream AI response with full chat history
       openAIReply()
       let streamFailed = false
       try {
-        await streamReply()
+        // Send the chat log including the new user message
+        await streamReply(evaluation, next, newChatLog)
       } catch {
         streamFailed = true
       }
 
-      const idx = aiIndex
-      const streamedText = streamed.trim()
-      if (streamFailed || !streamedText) {
+      if (streamFailed) {
         const fallback = isCoachQuestion
           ? `Happy to help with that! ${evaluation?.feedback || 'Answer in your own words and I will help you sharpen it.'}`
-          : `${evaluation?.feedback || 'Answer recorded — nice work.'}${next ? `\n\nNext question: ${next.question_text}` : '\n\nThat was the last question — tap "End session" to finish.'}`
+          : `${evaluation?.feedback || 'Answer recorded — nice work.'}`
         setChatLog((prev) => {
           const nxt = prev.slice()
-          if (idx != null && nxt[idx]) nxt[idx] = { ...nxt[idx], content: fallback }
+          const idx = nxt.length - 1
+          if (nxt[idx] && nxt[idx].role === 'ai') {
+            nxt[idx] = { ...nxt[idx], content: fallback }
+          }
           return nxt
         })
-      } else if (next && !streamedText.endsWith('?') && !streamedText.includes(next.question_text.slice(0, 30))) {
-        setTimeout(() => {
-          setChatLog((prev) => [...prev, { role: 'ai', content: next.question_text }])
-        }, 60)
       }
     } catch (err) {
       setError(err.message)
@@ -334,16 +325,16 @@ export function Interview({ sessionId }) {
 
     <div className="interview-chat">
       <section className="chat-pane">
-        <div className="chat-thread" ref={chatScrollRef}>
-          {chatLog.map((m, i) => <ChatMessage type={m.role} key={i}><p className="chat-text">{m.content}</p></ChatMessage>)}
+<div className="chat-thread" ref={chatScrollRef}>
+            {chatLog.map((m, i) => <ChatMessage type={m.role} key={i} canSpeak={m.role === 'ai' && !!m.content} speaking={speaking} onSpeak={() => speaking ? stopSpeak() : speak(m.content, session?.id, { voice, language })}><p className="chat-text">{m.content}</p></ChatMessage>)}
           {submitting && !streaming && <ChatMessage type="ai"><div className="ai-thinking"><span className="spinner" /> Analysing your answer…</div></ChatMessage>}
         </div>
         <form className="chat-controls" onSubmit={handleSend}>
-          {(recording || transcribing) && <div className="transcript-preview"><span className="live-dot" /> {recording ? 'Listening — speak clearly' : 'Transcribing your speech…'}<span className="transcript-echo">{answer}</span></div>}
+          {(listening || transcribing) && <div className="transcript-preview"><span className="live-dot" /> {listening ? 'Listening — speak clearly' : 'Processing…'}<span className="transcript-echo">{answer}</span></div>}
           {error && <div className="auth-error"><Icon name="close" size={14} /><span>{error}</span></div>}
           <div className="chat-input-row">
             <input ref={inputRef} value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Type your response or speak…" disabled={submitting || !question || isDone} />
-            {mode !== 'Typing only' && <button type="button" className={`live-mic${recording ? ' active' : ''}`} onClick={() => (recording ? stopRecording() : startRecording())} disabled={transcribing || submitting || !question || isDone} aria-label={recording ? 'Stop and transcribe' : 'Start microphone'}><Icon name={recording ? 'close' : 'mic'} size={22} /><i /></button>}
+            {mode !== 'Typing only' && <button type="button" className={`live-mic${listening ? ' active' : ''}`} onClick={() => (listening ? stopRecording() : startRecording())} disabled={submitting || !question || isDone} aria-label={listening ? 'Stop listening' : 'Start microphone'}><Icon name={listening ? 'close' : 'mic'} size={22} /><i /></button>}
             <button type="submit" className="send-btn" disabled={submitting || !answer.trim() || !question || isDone} aria-label="Send answer"><Icon name="arrow" size={17} /></button>
           </div>
         </form>

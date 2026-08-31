@@ -4,10 +4,24 @@ import { Icon } from '../../components/Icon'
 import { api, clearUser } from '../../utils/api'
 import { navigate } from '../../utils/navigation'
 
+const TTS_VOICES = [
+  { id: 'alloy', label: 'Alloy — Neutral, balanced' },
+  { id: 'echo', label: 'Echo — Warm, conversational' },
+  { id: 'fable', label: 'Fable — Expressive, storytelling' },
+  { id: 'onyx', label: 'Onyx — Deep, authoritative' },
+  { id: 'nova', label: 'Nova — Friendly, upbeat' },
+  { id: 'shimmer', label: 'Shimmer — Soft, calm' },
+]
+
+const LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'fr', label: 'Français' },
+]
+
 export function Settings() {
   const [notifications, setNotifications] = useState({ feedback: true, resume: true, weekly: false, product: true })
   const [privacy, setPrivacy] = useState({ transcripts: true, recommendations: true, share: false })
-  const [preferences, setPreferences] = useState({ language: 'English', timezone: 'Africa/Douala (UTC+1)', density: 'comfortable' })
+  const [preferences, setPreferences] = useState({ language: 'en', timezone: 'Africa/Douala (UTC+1)', density: 'comfortable', voice: 'nova' })
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
@@ -25,7 +39,7 @@ export function Settings() {
         const s = profile.settings || {}
         setNotifications({ feedback: true, resume: true, weekly: false, product: true, ...(s.notifications || {}) })
         setPrivacy({ transcripts: true, recommendations: true, share: false, ...(s.privacy || {}) })
-        setPreferences({ language: 'English', timezone: 'Africa/Douala (UTC+1)', density: 'comfortable', ...(s.preferences || {}) })
+        setPreferences({ language: 'en', timezone: 'Africa/Douala (UTC+1)', density: 'comfortable', voice: 'nova', ...(s.preferences || {}) })
       } catch {
         /* profile fetch is best-effort on settings page */
       }
@@ -91,8 +105,13 @@ export function Settings() {
         <label className="field plain">
           <span>Language</span>
           <select value={preferences.language} onChange={(e) => update(setPreferences, 'language', e.target.value)}>
-            <option>English</option>
-            <option>Français</option>
+            {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
+          </select>
+        </label>
+        <label className="field plain">
+          <span>Voice</span>
+          <select value={preferences.voice} onChange={(e) => update(setPreferences, 'voice', e.target.value)}>
+            {TTS_VOICES.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
           </select>
         </label>
         <label className="field plain">
