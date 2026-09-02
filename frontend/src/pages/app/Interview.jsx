@@ -215,7 +215,21 @@ export function Interview({ sessionId }) {
     const newChatLog = [...chatLog, { role: 'user', content: text }]
     setChatLog(newChatLog)
 
-    const isCoachQuestion = /\?\s*$/.test(text)
+    // Decide whether this submission is the candidate ANSWERING the live
+    // interview question, or the candidate ASKING the coach something about the
+    // process. Relying on a trailing "?" alone is wrong — an answer can
+    // naturally end with "does that count?", "right?", or "is that enough?"
+    // and must still be treated as an answer (evaluated & recorded), never
+    // mislabelled as a question. So we only treat it as a coaching question
+    // when there is no live question, or when the wording is clearly a
+    // process/personal question rather than an answer.
+    const hasLiveQuestion = Boolean(question)
+    const lowerText = text.trim().toLowerCase()
+    const isCoachQuestion = !hasLiveQuestion || (
+      /^(hi|hello|hey|thank|thanks)\b/i.test(lowerText) ||
+      /\b(skip|next question|move on|pass)\b/i.test(lowerText) ||
+      /(^(what do you mean|i (don'?t|do not) understand)|can (you|u) (explain|clarify|rephrase)|how (do|should|can) i|what should i|give me an? (example|hint|tip)|help me|i'?m (nervous|anxious|worried|stressed))\b/i.test(lowerText)
+    )
     let evaluation = null
     let next = null
 

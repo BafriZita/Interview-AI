@@ -199,7 +199,13 @@ function friendlyCoachReply(userMessage, candidateName, extra = {}) {
   const conversationHistory = extra.conversationHistory || []
 
   // Analyze the user's message to understand intent
-  const isQuestion = /\?\s*$/.test(message.trim())
+  // If there's a score, this is an interview ANSWER (evaluated), not a coaching question
+  // A trailing "?" alone is NOT enough to call something a question — an answer
+  // can end with "…does that count?" or "…right?". Only treat it as a genuine
+  // coaching question when it clearly asks the coach something.
+  const isQuestion = score == null &&
+    /\?\s*$/.test(message.trim()) &&
+    /(what|how|why|when|where|who|which|can|could|would|should|do|does|did|is|are|will|help|explain|mean|example|advice|suggest|rephras|clarif)\b/i.test(message)
   const isClarificationRequest = /(what (do you mean|kind of example)|i don't understand|can you explain|clarify|rephrase)/i.test(text)
   const isSkipRequest = /(skip|next question|move on|pass)/i.test(text)
   const isFeedbackResponse = evaluationFeedback && (/(yes|yeah|yep|sure|ok|okay|ready|next|nope|no|nah)/i.test(text) || isQuestion || isClarificationRequest)
@@ -226,11 +232,26 @@ function friendlyCoachReply(userMessage, candidateName, extra = {}) {
     }
   }
 
+  // Extract topics already covered in feedback to avoid repetition
+  const coveredTopics = new Set()
+  for (const msg of conversationHistory) {
+    if (msg.role === 'assistant' && !msg.content.startsWith('Question:')) {
+      const content = msg.content.toLowerCase()
+      if (content.includes('star') || content.includes('structure')) coveredTopics.add('structure')
+      if (content.includes('metric') || content.includes('number') || content.includes('quantif')) coveredTopics.add('metrics')
+      if (content.includes('example') || content.includes('specific') || content.includes('concrete')) coveredTopics.add('examples')
+      if (content.includes('own') || content.includes('\"i\"') || content.includes('your action')) coveredTopics.add('ownership')
+      if (content.includes('result') || content.includes('outcome') || content.includes('impact')) coveredTopics.add('results')
+      if (content.includes('rambling') || content.includes('concise') || content.includes('brief')) coveredTopics.add('conciseness')
+    }
+  }
+
   const hasSpecifics = /\d+(\.\d+)?\s*(%|percent|users|clients|revenue|cost|people|team|months|years|weeks|days|hours|ms|seconds|requests|transactions|api|database|server|latency|throughput|scale|reduced|increased|improved|cut|saved|delivered|launched|built|designed|implemented|architected|led|managed|owned|drove)\b/i.test(message)
   const hasSTAR = /situation|task|action|result|context|challenge|outcome|impact|example|instance|specific|concrete|real|actual/i.test(message)
   const hasOwnership = /\bi (led|built|designed|created|developed|implemented|launched|drove|managed|owned|delivered|improved|reduced|increased|solved|fixed|architected|decided|chose|prioritized)\b/i.test(message)
   const wordCount = message.trim().split(/\s+/).length
 
+  // Generate contextual response
   let response = ''
 
   // 1. Handle clarification requests about the question itself
@@ -331,12 +352,13 @@ function friendlyCoachReply(userMessage, candidateName, extra = {}) {
       ], `${name.length}`)
     }
 
-    // Add a natural follow-up question based on their answer
+    // Add a natural follow-up question based on their answer, avoiding covered topics
     let followUp = ''
     if (score < 75) {
-      if (!hasSTAR) followUp = ` Want to try retelling it with a specific example?`
-      else if (!hasSpecifics) followUp = ` What was the measurable result?`
-      else if (!hasOwnership) followUp = ` What was YOUR specific role in that?`
+      if (!hasSTAR && !coveredTopics.has('examples')) followUp = ` Want to try retelling it with a specific example?`
+      else if (!hasSpecifics && !coveredTopics.has('metrics')) followUp = ` What was the measurable result?`
+      else if (!hasOwnership && !coveredTopics.has('ownership')) followUp = ` What was YOUR specific role in that?`
+      else followUp = ` What did you learn from that experience?`
     } else {
       followUp = ` What did you learn from that experience?`
     }
@@ -392,53 +414,86 @@ You have access to the FULL conversation history including:
 - The candidate's follow-up questions and your replies
 
 RULES FOR EVERY REPLY:
-1. READ the full history first. Understand what's being discussed right now.
-2. Determine the user's intent:
-   - Are they ANSWERING the current interview question?
+1. READ the full history first, but ALWAYS reply to the CANDIDATE'S LATEST message — whatever they just typed is the thing you must respond to. Do not repeat advice, do not ignore it, do not answer a question they didn't ask.
+2. Determine the intent of the LATEST message:
+   - Are they ANSWERING the current interview question? (Their answer may end with "…does that count?" or "…right?" — that is still an ANSWER, not a question.)
    - Are they ASKING a clarifying question about the question?
    - Are they RESPONDING to your previous feedback?
    - Are they ASKING for an example/explanation?
    - Are they asking to SKIP the question?
    - Are they expressing NERVES/THANKS/GREETING?
    - Are they going OFF-TOPIC?
-3. RESPOND appropriately:
-   - If ANSWERING: Acknowledge their specific answer, give honest feedback referencing THEIR words, ask ONE relevant follow-up or present next question naturally.
+3. RESPOND to what they actually said:
+   - If ANSWERING: Engage with THEIR specific words. Give honest, concrete feedback about that answer (what landed, what to sharpen), ask ONE relevant follow-up or present the next question naturally.
    - If ASKING FOR CLARIFICATION: Rephrase the question simply, encourage them to try.
-   - If RESPONDING TO FEEDBACK: Answer their follow-up, then guide back.
+   - If RESPONDING TO FEEDBACK: Answer their follow-up directly, then guide back.
    - If ASKING TO SKIP: Acknowledge, present next question.
    - If NERVES/THANKS/GREETING: Warm response, keep interview on track.
    - If OFF-TOPIC: Gently redirect back to interview.
-4. Be conversational: short sentences, natural flow, reference their actual words.
-5. NEVER give generic advice disconnected from their answer.
+   - NEVER label their message "good question" unless they genuinely asked you a question. If they answered, talk about their answer.
+4. Be conversational and INTERACTIVE: short, natural sentences, echo their actual wording, ask a genuine follow-up. Keep a back-and-forth rhythm like a real mentor — not a wall of generic advice.
+5. NEVER give generic advice disconnected from their answer. Reference their resume, their words, and this session specifically.
 6. NEVER force STAR method unless their answer genuinely needs structure.
-7. Keep interview moving but at a natural pace.${evaluationNote}${nextNote}
+7. Keep interview moving but at a natural pace. When the flow feels done, smoothly hand over to the next question.${evaluationNote}${nextNote}
 
 Remember their name, resume, and everything said this session. Build on it naturally.`
 }
 
 /**
- * AI-generated interview questions, personalised to the candidate's resume and target role.
- * @param {{ targetRole:string, resumeText?:string, candidateName?:string, type:string, count:number, level?:string }} context
+ * AI-generated interview questions, personalised to the candidate's resume, job description, and target role.
+ * @param {{ targetRole:string, resumeText?:string, jobDescriptionText?:string, candidateName?:string, type:string, count:number, level?:string }} context
  */
 export async function generateQuestions(context) {
   if (!client) return buildQuestionSet(context.type, context.count, context.level)
   const resume = (context.resumeText || '').trim().slice(0, 4000)
+  const jobDescription = (context.jobDescriptionText || '').trim().slice(0, 3000)
   const name = firstName(context.candidateName)
   const levelGuide = context.level === 'Junior'
     ? 'Focus on foundational concepts, learning ability, and potential. Questions should be approachable but reveal depth of understanding.'
     : context.level === 'Senior / Staff'
     ? 'Focus on architectural decisions, trade-offs, mentoring, and strategic thinking. Questions should probe for systems-level thinking and leadership.'
     : 'Focus on practical experience, problem-solving, and delivery. Questions should balance depth with real-world pragmatism.'
+  
+  const hasResume = resume.length > 100
+  const hasJD = jobDescription.length > 100
+  
+  const personalizationContext = []
+  if (hasResume) personalizationContext.push(`RESUME:\n${resume}`)
+  if (hasJD) personalizationContext.push(`JOB DESCRIPTION:\n${jobDescription}`)
+  if (!hasResume && !hasJD) personalizationContext.push('No resume or job description provided. Generate strong general questions for the role and level.')
+  
+  const systemPrompt = `You are an expert interview coach and hiring manager. Generate ${context.count} highly personalized, realistic interview questions for a ${context.targetRole || 'software'} position at ${context.level || 'Mid-level'} level.
+
+CANDIDATE: ${name || 'the candidate'}
+INTERVIEW TYPE: ${context.type}
+DIFFICULTY: ${context.level || 'Mid-level'}
+${levelGuide}
+
+${personalizationContext.join('\n\n')}
+
+CRITICAL PERSONALIZATION RULES:
+1. If RESUME provided: Reference specific projects, technologies, roles, metrics, and achievements from their resume. Ask about their actual experience.
+2. If JOB DESCRIPTION provided: Align questions with the JD's requirements, tech stack, responsibilities, and desired competencies.
+3. If BOTH provided: Bridge the two - ask how their experience maps to the role's needs, probe gaps, explore transferable skills.
+4. Question types must match the interview type: ${context.type === 'mixed' ? 'Mix of behavioral, technical, situational, and problem-solving' : context.type}.
+5. Difficulty must match level: Junior=foundational/growth, Mid-level=practical/depth, Senior/Staff=architecture/strategy/leadership.
+6. Each question must feel written FOR THIS PERSON, not generic templates.
+7. Include relevant follow-up hints for the interviewer.
+
+Return ONLY valid JSON with this exact structure:
+{
+  "questions": [
+    {"question_type": "behavioral|technical|situational|problem_solving|hr", "question_text": "...", "focus_area": "...", "difficulty": "junior|mid|senior", "follow_up_hint": "..."}
+  ]
+}`
+
   try {
     const data = await chatJson([
-      { role: 'system', content: `You are a senior interview coach. Generate realistic, challenging interview questions for a ${context.targetRole || 'software'} interview based on the candidate's resume and background. Personalise them — every question should feel like it was written for this specific person, ${name || 'the candidate'}. Avoid repeating questions from the candidate's previous sessions. Return ONLY JSON.
-
-Difficulty level: ${context.level || 'Mid-level'}
-${levelGuide}` },
-      { role: 'user', content: JSON.stringify({ interviewType: context.type, questionCount: context.count, resume, candidateName: name, level: context.level }) },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Generate ${context.count} personalized questions now.` }
     ], {
       fallbackResult: { questions: buildQuestionSet(context.type, context.count, context.level) },
-      maxTokens: 2000,
+      maxTokens: 3000,
     })
     const list = Array.isArray(data?.questions) ? data.questions : []
     if (!list.length) return buildQuestionSet(context.type, context.count, context.level)

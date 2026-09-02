@@ -51,6 +51,16 @@ async function loadCandidateName(userId) {
   }
 }
 
+async function loadJobDescriptionText(userId, jobDescriptionId) {
+  if (!jobDescriptionId) return ''
+  const { data } = await supabaseAdmin.from('job_descriptions')
+    .select('extracted_text')
+    .eq('id', jobDescriptionId)
+    .eq('user_id', userId)
+    .maybeSingle()
+  return data?.extracted_text || ''
+}
+
 async function loadOwnedSession(sessionId, userId) {
   const { data: session, error } = await supabaseAdmin.from('interview_sessions')
     .select('id, user_id, target_role, interview_type, status, resume_id')
@@ -73,11 +83,12 @@ interviewRouter.get('/', asyncHandler(async (req, res) => {
 
 interviewRouter.post('/', validate(createSchema), asyncHandler(async (req, res) => {
   const d = req.body
-  const [resumeText, candidateName] = await Promise.all([
+  const [resumeText, candidateName, jobDescriptionText] = await Promise.all([
     loadResumeText(req.session.userId, d.resumeId),
     loadCandidateName(req.session.userId),
+    loadJobDescriptionText(req.session.userId, d.jobDescriptionId),
   ])
-  const questions = await generateQuestions({ targetRole: d.targetRole, resumeText, candidateName, type: d.type, count: d.questionCount, level: d.level })
+  const questions = await generateQuestions({ targetRole: d.targetRole, resumeText, jobDescriptionText, candidateName, type: d.type, count: d.questionCount, level: d.level })
 
   const { data: result, error } = await supabaseAdmin.from('interview_sessions').insert({
     user_id: req.session.userId,
@@ -231,9 +242,16 @@ interviewRouter.post('/:id/chat', validate(chatSchema), asyncHandler(async (req,
     }
   }
   
-  messages.push({ role: 'user', content: req.body.message })
+  // The frontend already includes the candidate's latest message in chatLog,
+  // so avoid appending it twice (which confuses the model about intent).
+  let conversationHistory = [...messages]
+  if (messages.at(-1)?.content !== req.body.message) {
+    messages.push({ role: 'user', content: req.body.message })
+  } else {
+    conversationHistory = messages.slice(0, -1)
+  }
   
-  // Sanitize: limit history to last 20 messages, strip any injection attempts
+  // Sanitize: limit history to last 20 messages
   messages = messages.slice(-20).map(m => ({
     role: m.role,
     content: String(m.content).slice(0, 4000)
@@ -246,7 +264,7 @@ interviewRouter.post('/:id/chat', validate(chatSchema), asyncHandler(async (req,
     messages, 
     evaluation: req.body.evaluation, 
     nextQuestion: req.body.nextQuestion,
-    conversationHistory: req.body.chatLog || messages
+    conversationHistory
   })
   sendData(res, { reply })
 }))
@@ -277,7 +295,14 @@ interviewRouter.post('/:id/chat/stream', validate(chatSchema), asyncHandler(asyn
     }
   }
   
-  messages.push({ role: 'user', content: req.body.message })
+  // The frontend already includes the candidate's latest message in chatLog,
+  // so avoid appending it twice (which confuses the model about intent).
+  let conversationHistory = [...messages]
+  if (messages.at(-1)?.content !== req.body.message) {
+    messages.push({ role: 'user', content: req.body.message })
+  } else {
+    conversationHistory = messages.slice(0, -1)
+  }
   
   // Sanitize: limit history to last 20 messages
   messages = messages.slice(-20).map(m => ({
@@ -309,7 +334,7 @@ interviewRouter.post('/:id/chat/stream', validate(chatSchema), asyncHandler(asyn
       messages, 
       evaluation: req.body.evaluation, 
       nextQuestion: req.body.nextQuestion,
-      conversationHistory: req.body.chatLog || messages
+      conversationHistory
     }, (token) => {
       console.log('[Route] Token received:', token?.slice(0, 50))
       send('token', { token })
